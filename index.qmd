@@ -1,0 +1,218 @@
+---
+title: "Proyecto"
+author: por Jesús Rojas L & Sarita Venegas V 
+format: 
+  dashboard:
+    orientation: columns
+theme: journal
+lang: es
+server: shiny
+---
+
+```{r, include=FALSE}
+#| label: CargaDePaquetes
+#| context: setup
+library(shiny)
+library(DT)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(sf)
+library(plotly)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+```
+
+```{r, include=FALSE}
+#| label: CargaDeDatos
+#| context: data
+RegistrosIguanidae <- st_read(
+    "registros-iguanidae.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+      ),
+      quiet = TRUE
+    )
+EspeciesReptilesCR <- read_csv("especies-reptiles.csv")
+RegionesSECR <- st_read("regiones-socioeconomicas.gpkg")
+RegionesSECR <-
+  RegionesSECR |>
+  st_transform(4326)
+st_crs(RegistrosIguanidae) <- 4326
+RegistrosUEspecies <-
+  left_join(x=RegistrosIguanidae,
+            y=EspeciesReptilesCR,
+            by="species") |>
+  mutate(fecha=as.Date(eventDate))
+RegistrosUEspeciesURegiones <-
+  st_join(x=RegistrosUEspecies,
+          y=dplyr::select(RegionesSECR, region),
+          join=st_within) 
+
+```
+
+#  {.sidebar}
+
+```{r}
+#| label: PanelWidgetInput
+ListaEspecies <- unique(RegistrosUEspeciesURegiones$species)
+ListaEspecies <- sort(ListaEspecies)
+ListaEspecies <- c("Todas", ListaEspecies)
+selectInput(
+  inputId = "specie",
+  label = "Especie",
+  choices = ListaEspecies,
+  selected = "Todas"
+)
+ListaRegion <- unique(RegistrosUEspeciesURegiones$region)
+ListaRegion <- sort(ListaRegion)
+ListaRegion <- c("Todas", ListaRegion)
+selectInput(
+  inputId = "region",
+  label = "Región Socioeconómica",
+  choices = ListaRegion,
+  selected = "Todas"
+)
+ListaCategoría <- unique(RegistrosUEspeciesURegiones$iucnRedListCategory)
+ListaCategoría <- sort(ListaCategoría)
+ListaCategoría <- c("Todas", ListaCategoría)
+selectInput(
+  inputId = "category",
+  label = "Categoría de la Lista Roja de la IUCN",
+  choices = ListaCategoría,
+  selected = "Todas"
+)
+AnhoMayor= max(as.numeric(RegistrosUEspeciesURegiones$year), na.rm = TRUE)
+AnhoMenor= min(as.numeric(RegistrosUEspeciesURegiones$year), na.rm = TRUE)
+sliderInput(inputId = "year",
+            label="Rango de Años de Registro",
+            min= AnhoMenor ,
+            max= AnhoMayor ,
+            value=c(AnhoMenor ,
+                    AnhoMayor),
+            step= 1,
+            sep="<br>"
+            )
+```
+
+# Tabla
+
+```{r}
+#| label: TablaOutput
+#| title: "Lista de Registros de la Presencia de Especies Pertenecientes a la familia Iguanidae en Costa Rica según Región Socioeconómica"
+dataTableOutput(
+	outputId =  "Tabla" 
+)
+```
+
+# Mapa
+
+```{r}
+#| label: MapaOutput
+#| title: "Representación Espacial de la Presencia de Especies Pertenecientes a la familia Iguanidae en Costa Rica según Región Socioeconómica"
+leaflet ()|>
+  setView(lng = -84,
+        lat = 10,
+        zoom = 7)
+leafletOutput(
+	outputId =  "Mapa" 
+)
+```
+
+# Gráfico
+
+```{r}
+#| label: GraficoOutput
+#| title: "Gráfico de la Presencia de Especies Pertenecientes a la familia Iguanidae en Costa Rica según Región Socioeconómica"
+plotlyOutput(
+	outputId =  "Grafico" 
+)
+```
+
+```{r}
+#| label: servidor
+#| context: server
+DatosFiltrados <-
+   reactive({
+    RegistrosFiltrados <- RegistrosUEspeciesURegiones
+    if (input$specie != "Todas") {
+      RegistrosFiltrados <- RegistrosFiltrados |> dplyr::filter(species == input$specie)}
+    if (input$region != "Todas") {
+      RegistrosFiltrados <- RegistrosFiltrados |> dplyr::filter(region == input$region)}
+    if (input$category != "Todas") { 
+      RegistrosFiltrados <- RegistrosFiltrados |> dplyr::filter(iucnRedListCategory == input$category)}
+    RegistrosFiltrados <- RegistrosFiltrados |>
+      filter(as.numeric(format(fecha, "%Y")) >= input$year[1]) |>
+      filter(as.numeric(format(fecha, "%Y")) <= input$year[2])
+    return(RegistrosFiltrados)
+  })
+output$Tabla <- renderDataTable({
+  RegistrosFiltrados <- DatosFiltrados()
+  ListaEspecies <- c("Todas", unique(RegistrosFiltrados$species))
+  updateSelectInput(session, "specie", choices = ListaEspecies, selected = input$specie)
+  ListaRegion <- c("Todas", unique(RegistrosFiltrados$region))
+  updateSelectInput(session, "region", choices = ListaRegion, selected = input$region)
+  ListaCategoría <- c("Todas", unique(RegistrosFiltrados$iucnRedListCategory))
+  updateSelectInput(session, "category", choices = ListaCategoría, selected = input$category)
+  RegistrosFiltrados |>
+    dplyr::select(species, iucnRedListCategory, region, fecha) |>
+    st_drop_geometry() |>
+    datatable(rownames=FALSE,
+              colnames = c("Especie", "Categoría en la Lista Roja", "Región Socioeconómica", "Fecha"),
+              options= list(
+                pageLength = 10,
+                language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+              ))
+})
+output$Mapa <- renderLeaflet({
+  RegistrosFiltrados <- DatosFiltrados()
+  leaflet() |>
+    addProviderTiles(providers$OpenStreetMap, group = "OpenStreetMap") |>
+    addProviderTiles(providers$Esri.WorldImagery, group = "ESRI World Imagery") |>
+    addPolygons(data = RegionesSECR,
+                fillColor = ~colorFactor(palette = "Set1", domain = RegionesSECR$region)(RegionesSECR$region),
+                color = "#444444",
+                weight = 1,
+                opacity = 1,
+                fillOpacity = 0.7,
+                popup = ~paste("Región: ", region),
+                group = "Regiones Socioeconómicas") |>
+    addCircleMarkers(data = RegistrosUEspeciesURegiones,
+                     color = "blue",
+                     radius = 4,
+                     stroke = FALSE,
+                     fillOpacity = 0.7,
+                     popup = ~paste("<b>Especie:</b> ", species, "<br/>",
+                                    "<b>Categoría en Lista Roja:</b> ", iucnRedListCategory, "<br/>",
+                                    "<b>Región:</b> ", region, "<br/>",
+                                    "<b>Fecha:</b> ", fecha),
+                     group = "Registros de Presencia",
+                     sep = "<br>") |>
+    addLayersControl(
+      baseGroups = c("OpenStreetMap", "ESRI World Imagery"),
+      overlayGroups = c("Regiones Socioeconómicas", "Registros de Presencia"),
+      options = layersControlOptions(collapsed = FALSE)
+    )
+})  
+output$Grafico <- renderPlotly({
+  RegistrosFiltrados <- DatosFiltrados()
+  DatosGrafico <- RegistrosFiltrados |>
+    st_drop_geometry() |>
+    group_by(region) |>
+    summarise(n = n()) |>
+    arrange(desc(n))
+  Grafico <- ggplot(DatosGrafico, aes(x = reorder(region, -n), y = n)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n), vjust = -0.3, size = 3.5) +
+    labs(
+      x = "Regiones Socioeconómicas",
+      y = "Cantidad de Iguanidae"
+    ) +
+    theme_minimal()
+  ggplotly(Grafico) |> config(locale = "es")
+})
+
+```
+
